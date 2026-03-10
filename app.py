@@ -146,8 +146,8 @@ def get_option_chain(symbol, expiry, token):
 def get_historical_data(symbol, interval, token, days=5):
     """Fetch real OHLC from Upstox - tries intraday endpoint first, then range"""
     key = INSTR.get(symbol, '')
-    imap = {'1m':'1minute','5m':'5minute','15m':'15minute','30m':'30minute','1h':'60minute'}
-    upstox_interval = imap.get(interval, '15minute')
+    imap = {'1m':'1minute','5m':'30minute','15m':'30minute','30m':'30minute','1h':'day'}
+    upstox_interval = imap.get(interval, '30minute')
 
     ist_now   = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
     to_date   = ist_now.strftime('%Y-%m-%d')
@@ -155,7 +155,8 @@ def get_historical_data(symbol, interval, token, days=5):
     encoded   = requests.utils.quote(key, safe='')
 
     # Try 1: intraday (today only)
-    url1 = f'https://api.upstox.com/v2/historical-candle/intraday/{encoded}/{upstox_interval}'
+    # Intraday endpoint only supports 1minute; use range endpoint for others
+    url1 = f'https://api.upstox.com/v2/historical-candle/intraday/{encoded}/1minute'
     r = upstox_get(url1, token)
 
     # Try 2: historical range
@@ -297,7 +298,7 @@ with st.sidebar:
     # Strategy params
     st.markdown("### ⚡ Strategy Lab")
     strat_symbol = st.selectbox("Symbol", list(INSTR.keys()), key='strat_sym')
-    tf           = st.selectbox("Timeframe", ['1m','5m','15m','30m','1h'], index=2)
+    tf           = st.selectbox("Timeframe", ['1m','30m','1h'], index=1, help='Upstox supports: 1min, 30min, Day')
     lookback     = st.selectbox("Lookback", ['2','5','10'], index=1)
     
     st.markdown("**Fast EMA**")
