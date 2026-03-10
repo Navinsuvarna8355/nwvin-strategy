@@ -248,33 +248,51 @@ def run_strategy(df, fast_len, fast_src, slow_len, slow_src, buffer, max_loss):
     src_map = {'Open':'open','High':'high','Low':'low','Close':'close'}
     f_col = src_map.get(fast_src, 'open')
     s_col = src_map.get(slow_src, 'close')
-    
+
     df = df.copy()
     df['fast_ema'] = calc_ema(df[f_col], fast_len)
     df['slow_ema'] = calc_ema(df[s_col], slow_len)
     df['diff']     = df['fast_ema'] - df['slow_ema']
-    
+    df['date']     = df.index.date   # for overnight detection
+
     def get_signal(row):
         if pd.isna(row['diff']): return '⚪ SIDEWAYS'
         if row['diff'] >  buffer: return '🟢 BUY'
         if row['diff'] < -buffer: return '🔴 SELL'
         return '⚪ SIDEWAYS'
-    
+
     df['signal'] = df.apply(get_signal, axis=1)
     df.dropna(inplace=True)
-    
+
     trades = []
     active, e_price, e_time = None, 0, None
-    
+
     for idx, row in df.iterrows():
         sig   = row['signal']
         price = row['close']
-        
+
         if active:
-            pnl = (price - e_price) if active == '🟢 BUY' else (e_price - price)
-            if pnl <= -max_loss or sig == '⚪ SIDEWAYS' or sig != active:
+            # ── Force close if new trading day (no overnight trades) ──
+            if idx.date() != e_time.date():
+                pnl = (price - e_price) if active == '🟢 BUY' else (e_price - price)
+                trades.append({
+                    'Date':       e_time.strftime('%d/%m/%Y'),
+                    'Time Entry': e_time.strftime('%H:%M'),
+                    'Time Exit':  '15:30 EOD',
+                    'Trend':      active + ' (EOD)',
+                    'Entry ₹':    round(e_price, 2),
+                    'Exit ₹':     round(e_price + pnl, 2),
+                    'Points':     round(pnl, 2),
+                    'SL Hit':     False
+                })
+                active = None
+                continue
+
+            pnl    = (price - e_price) if active == '🟢 BUY' else (e_price - price)
+            sl_hit = pnl <= -max_loss
+
+            if sl_hit or sig == '⚪ SIDEWAYS' or sig != active:
                 final_pnl = max(pnl, -max_loss)
-                sl_hit    = pnl <= -max_loss
                 trades.append({
                     'Date':       idx.strftime('%d/%m/%Y'),
                     'Time Entry': e_time.strftime('%H:%M'),
@@ -286,10 +304,10 @@ def run_strategy(df, fast_len, fast_src, slow_len, slow_src, buffer, max_loss):
                     'SL Hit':     sl_hit
                 })
                 active = None
-        
+
         if not active and sig != '⚪ SIDEWAYS':
             active, e_price, e_time = sig, price, idx
-    
+
     return trades, df
 
 def calc_max_pain(chain):
