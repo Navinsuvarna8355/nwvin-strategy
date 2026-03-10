@@ -144,27 +144,33 @@ def get_option_chain(symbol, expiry, token):
     return []
 
 def get_historical_data(symbol, interval, token, days=5):
-    """Fetch real OHLC from Upstox historical candle API"""
+    """Fetch real OHLC from Upstox - tries intraday endpoint first, then range"""
     key = INSTR.get(symbol, '')
-    # Map interval
     imap = {'1m':'1minute','5m':'5minute','15m':'15minute','30m':'30minute','1h':'60minute'}
     upstox_interval = imap.get(interval, '15minute')
-    
-    to_date   = ( datetime.now(timezone.utc) + timedelta(hours=5, minutes=30) ).strftime('%Y-%m-%d')
-    from_date = (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30) - timedelta(days=days)).strftime('%Y-%m-%d')
-    
-    url = f'https://api.upstox.com/v2/historical-candle/{requests.utils.quote(key)}/{upstox_interval}/{to_date}/{from_date}'
-    r = upstox_get(url, token)
-    
+
+    ist_now   = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+    to_date   = ist_now.strftime('%Y-%m-%d')
+    from_date = (ist_now - timedelta(days=days)).strftime('%Y-%m-%d')
+    encoded   = requests.utils.quote(key, safe='')
+
+    # Try 1: intraday (today only)
+    url1 = f'https://api.upstox.com/v2/historical-candle/intraday/{encoded}/{upstox_interval}'
+    r = upstox_get(url1, token)
+
+    # Try 2: historical range
+    if not (r.get('status') == 'success' and r.get('data', {}).get('candles')):
+        url2 = f'https://api.upstox.com/v2/historical-candle/{encoded}/{upstox_interval}/{to_date}/{from_date}'
+        r = upstox_get(url2, token)
+
     if r.get('status') == 'success' and r.get('data', {}).get('candles'):
         candles = r['data']['candles']
         df = pd.DataFrame(candles, columns=['timestamp','open','high','low','close','volume','oi'])
         df['timestamp'] = pd.to_datetime(df['timestamp'])
         df = df.set_index('timestamp').sort_index()
-        # Filter market hours
         df = df.between_time('09:15','15:30')
-        return df
-    return pd.DataFrame()
+        return df, None
+    return pd.DataFrame(), r
 
 def fmt_k(n):
     if n is None or n == 0: return '—'
@@ -501,11 +507,13 @@ with tab2:
             st.error("⚠️ Set Upstox token first in sidebar!")
         else:
             with st.spinner(f"📡 Fetching real {tf} OHLC data from Upstox..."):
-                df_raw = get_historical_data(strat_symbol, tf, st.session_state.access_token, days=int(lookback))
+                df_raw, api_err = get_historical_data(strat_symbol, tf, st.session_state.access_token, days=int(lookback))
             
             if df_raw.empty:
                 st.error("❌ No data returned. Check token or try different timeframe.")
-                st.info("💡 Tip: Upstox historical data available for last 1-2 years for intraday intervals.")
+                if api_err:
+                    st.code(str(api_err), language='json')
+                st.info("💡 Tip: Upstox free account — intraday historical data may need market hours (9:15–3:30 IST) or try 1D timeframe.")
             else:
                 st.success(f"✓ {len(df_raw)} candles loaded ({df_raw.index[0].strftime('%d/%m %H:%M')} → {df_raw.index[-1].strftime('%d/%m %H:%M')})")
                 
