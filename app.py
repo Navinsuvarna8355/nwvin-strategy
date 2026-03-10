@@ -265,6 +265,7 @@ def run_strategy(df, fast_len, fast_src, slow_len, slow_src, buffer, max_loss, o
     df.dropna(inplace=True)
 
     trades = []
+    blocked_log = []
     active, e_price, e_time = None, 0, None
 
     for idx, row in df.iterrows():
@@ -306,21 +307,21 @@ def run_strategy(df, fast_len, fast_src, slow_len, slow_src, buffer, max_loss, o
                 active = None
 
         if not active and sig != '⚪ SIDEWAYS':
-            # ── OI FILTERS ──
             blocked = False
             block_reason = ''
 
             if oi_params:
-                pcr       = oi_params.get('pcr', 1.0)
-                max_pain  = oi_params.get('max_pain', price)
-                mp_zone   = oi_params.get('mp_zone', 150)
-                atm_ce_oi = oi_params.get('atm_ce_oi', 0)
-                atm_pe_oi = oi_params.get('atm_pe_oi', 0)
+                pcr         = oi_params.get('pcr', 1.0)
+                max_pain    = oi_params.get('max_pain', price)
+                mp_zone     = oi_params.get('mp_zone', 500)
+                atm_ce_oi   = oi_params.get('atm_ce_oi', 0)
+                atm_pe_oi   = oi_params.get('atm_pe_oi', 0)
                 atm_ce_prev = oi_params.get('atm_ce_prev', 0)
                 atm_pe_prev = oi_params.get('atm_pe_prev', 0)
-                use_pcr   = oi_params.get('use_pcr', True)
-                use_mp    = oi_params.get('use_mp', True)
-                use_atm   = oi_params.get('use_atm', True)
+                use_pcr     = oi_params.get('use_pcr', True)
+                use_mp      = oi_params.get('use_mp', True)
+                use_atm     = oi_params.get('use_atm', True)
+                spike_thresh= oi_params.get('atm_spike_thresh', 50)
 
                 # Filter 1: PCR Conflict Block
                 if use_pcr:
@@ -335,30 +336,34 @@ def run_strategy(df, fast_len, fast_src, slow_len, slow_src, buffer, max_loss, o
                 if use_mp and not blocked:
                     if sig == '🟢 BUY' and price > max_pain + mp_zone:
                         blocked = True
-                        block_reason = f'Price {price:.0f} > MaxPain+{mp_zone} ({max_pain+mp_zone:.0f}) — BUY blocked'
+                        block_reason = f'BUY blocked: Price({price:.0f}) > MaxPain+Zone({max_pain+mp_zone:.0f})'
                     elif sig == '🔴 SELL' and price < max_pain - mp_zone:
                         blocked = True
-                        block_reason = f'Price {price:.0f} < MaxPain-{mp_zone} ({max_pain-mp_zone:.0f}) — SELL blocked'
+                        block_reason = f'SELL blocked: Price({price:.0f}) < MaxPain-Zone({max_pain-mp_zone:.0f})'
 
                 # Filter 3: ATM OI Spike Block
                 if use_atm and not blocked:
-                    spike_thresh = oi_params.get('atm_spike_thresh', 50)
-                    # Only apply if prev_oi is meaningful (>100), else skip silently
                     if atm_ce_prev > 100 and atm_pe_prev > 100:
                         ce_chg = (atm_ce_oi - atm_ce_prev) / atm_ce_prev * 100
                         pe_chg = (atm_pe_oi - atm_pe_prev) / atm_pe_prev * 100
                         if sig == '🟢 BUY' and ce_chg > spike_thresh:
                             blocked = True
-                            block_reason = f'ATM Call OI spike +{ce_chg:.0f}% — Strong resistance, BUY blocked'
+                            block_reason = f'ATM Call OI spike +{ce_chg:.0f}% > {spike_thresh}% — BUY blocked'
                         elif sig == '🔴 SELL' and pe_chg > spike_thresh:
                             blocked = True
-                            block_reason = f'ATM Put OI spike +{pe_chg:.0f}% — Strong support, SELL blocked'
-                    # prev_oi=0 means first fetch of day — skip filter, don't block
+                            block_reason = f'ATM Put OI spike +{pe_chg:.0f}% > {spike_thresh}% — SELL blocked'
 
             if not blocked:
                 active, e_price, e_time = sig, price, idx
+            else:
+                # Track blocked trades for debug
+                blocked_log.append({
+                    'time': idx.strftime('%d/%m %H:%M'),
+                    'signal': sig,
+                    'reason': block_reason
+                })
 
-    return trades, df
+    return trades, df, blocked_log
 
 def calc_max_pain(chain):
     if not chain:
@@ -689,8 +694,11 @@ with tab2:
                     oi_params = None
 
 
-                trades, df_sig = run_strategy(df_raw, fast_len, fast_src, slow_len, slow_src, buffer_pts, max_loss, oi_params)
+                trades, df_sig, blocked_log = run_strategy(df_raw, fast_len, fast_src, slow_len, slow_src, buffer_pts, max_loss, oi_params)
                 st.session_state.trade_log = trades
+                if blocked_log:
+                    with st.expander(f"🚫 {len(blocked_log)} trades blocked by OI filters — click to see"):
+                        st.dataframe(pd.DataFrame(blocked_log), use_container_width=True)
                 
                 last_sig = df_sig['signal'].iloc[-1] if not df_sig.empty else '⚪ SIDEWAYS'
                 st.session_state.ema_signal = last_sig
