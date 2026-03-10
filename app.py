@@ -445,7 +445,7 @@ with st.sidebar:
     use_oi_filter  = st.checkbox("Enable OI Filters", value=True)
     use_pcr_filter = st.checkbox("PCR Conflict Block", value=True, help="BUY blocked if PCR<0.7 (Bearish). SELL blocked if PCR>1.3 (Bullish)")
     use_mp_filter  = st.checkbox("Max Pain Zone", value=True, help="Block trades if price too far from Max Pain")
-    mp_zone        = st.number_input("Max Pain Zone (pts)", value=150, step=25, min_value=25, help="e.g. 150 = block BUY if price > MaxPain+150")
+    mp_zone        = st.number_input("Max Pain Zone (pts)", value=500, step=25, min_value=25, help="Block BUY if price > MaxPain+X pts. Set high (500+) if Max Pain is far from spot.")
     use_atm_filter = st.checkbox("ATM OI Spike Block", value=True, help="Block if ATM CE/PE OI suddenly spikes")
     atm_spike      = st.number_input("ATM Spike Threshold %", value=50, step=10, min_value=10, help="Block if ATM OI increases by this % since last fetch")
 
@@ -679,7 +679,9 @@ with tab2:
                             'use_pcr': use_pcr_filter, 'use_mp': use_mp_filter,
                             'use_atm': use_atm_filter, 'atm_spike_thresh': atm_spike,
                         }
-                        st.info(f"🛡 OI Filters Active — PCR: {pcr_val:.2f} | Max Pain: {mp_val:,.0f} | ATM CE OI: {atm_ce_oi:,} | ATM PE OI: {atm_pe_oi:,}")
+                        mp_dist = abs(spot - mp_val)
+                        mp_warn = f" ⚠️ Max Pain {mp_dist:.0f}pts from spot — increase Zone to {int(mp_dist)+50}+" if mp_dist > mp_zone else ""
+                        st.info(f"🛡 OI Filters Active — PCR: {pcr_val:.2f} | Max Pain: {mp_val:,.0f} (dist: {mp_dist:.0f}pts){mp_warn} | ATM CE OI: {atm_ce_oi:,} | ATM PE OI: {atm_pe_oi:,}")
                     elif use_oi_filter and not st.session_state.chain_data:
                         st.warning("⚠️ Fetch Option Chain first (Tab 1) to enable OI filters!")
                 except Exception as oi_err:
