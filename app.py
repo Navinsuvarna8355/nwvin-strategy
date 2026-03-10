@@ -144,56 +144,92 @@ def get_option_chain(symbol, expiry, token):
     return []
 
 def get_historical_data(symbol, interval, token, days=5):
-    """Fetch real OHLC from Upstox - tries intraday endpoint first, then range"""
+    """
+    Fetch OHLC from Upstox.
+    - For 5/10/15 Min: fetch 1minute data for date range, then resample
+    - For 30 Min: fetch 30minute directly
+    - For 1 Hour: fetch day candles
+    Upstox valid intervals: 1minute, 30minute, day, week, month
+    """
     key = INSTR.get(symbol, '')
-    # Map display names to Upstox valid intervals
-    imap = {
-        '5 Min':  '1minute',   # fetch 1min, resample to 5min
-        '10 Min': '1minute',   # fetch 1min, resample to 10min
-        '15 Min': '1minute',   # fetch 1min, resample to 15min
-        '30 Min': '30minute',  # direct 30min
-        '1 Hour': 'day',       # daily candles
+    encoded = requests.utils.quote(key, safe='')
+
+    # Upstox API interval names
+    fetch_interval_map = {
+        '5 Min':  '1minute',
+        '10 Min': '1minute',
+        '15 Min': '1minute',
+        '30 Min': '30minute',
+        '1 Hour': 'day',
     }
     resample_map = {
-        '5 Min':'5min', '10 Min':'10min', '15 Min':'15min',
-        '30 Min':None, '1 Hour':None
+        '5 Min': '5min',
+        '10 Min': '10min',
+        '15 Min': '15min',
+        '30 Min': None,
+        '1 Hour': None,
     }
-    upstox_interval = imap.get(interval, '30minute')
-    resample_to = resample_map.get(interval, None)
+    upstox_interval = fetch_interval_map.get(interval, '30minute')
+    resample_to     = resample_map.get(interval, None)
+
+    # Lookback string → days
+    lb_map = {'1 Day': 1, '5 Days': 5, '1 Month': 30}
+    if isinstance(days, str):
+        days = lb_map.get(days, 5)
 
     ist_now   = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
     to_date   = ist_now.strftime('%Y-%m-%d')
-    # Map lookback string to days
-    lb_map = {'1 Day':1, '5 Days':5, '1 Month':30}
-    if isinstance(days, str):
-        days = lb_map.get(days, 5)
     from_date = (ist_now - timedelta(days=days)).strftime('%Y-%m-%d')
-    encoded   = requests.utils.quote(key, safe='')
 
-    # Try 1: intraday (today only)
-    # Intraday endpoint only supports 1minute; use range endpoint for others
-    url1 = f'https://api.upstox.com/v2/historical-candle/intraday/{encoded}/1minute'
-    r = upstox_get(url1, token)
+    all_candles = []
 
-    # Try 2: historical range
-    if not (r.get('status') == 'success' and r.get('data', {}).get('candles')):
-        url2 = f'https://api.upstox.com/v2/historical-candle/{encoded}/{upstox_interval}/{to_date}/{from_date}'
-        r = upstox_get(url2, token)
+    if days == 1:
+        # Today only — use intraday endpoint for 1min, range for others
+        if upstox_interval == '1minute':
+            url = f'https://api.upstox.com/v2/historical-candle/intraday/{encoded}/1minute'
+        else:
+            url = f'https://api.upstox.com/v2/historical-candle/{encoded}/{upstox_interval}/{to_date}/{from_date}'
+        r = upstox_get(url, token)
+        if r.get('status') == 'success' and r.get('data', {}).get('candles'):
+            all_candles = r['data']['candles']
+    else:
+        # Multi-day: Upstox 1min historical only gives ~2 days max per call
+        # So we fetch week by week for 1min, single call for 30min/day
+        if upstox_interval == '1minute':
+            # Fetch in 2-day chunks to stay within Upstox limits
+            cursor = ist_now - timedelta(days=days)
+            while cursor < ist_now:
+                chunk_from = cursor.strftime('%Y-%m-%d')
+                chunk_to   = min(cursor + timedelta(days=2), ist_now).strftime('%Y-%m-%d')
+                url = f'https://api.upstox.com/v2/historical-candle/{encoded}/1minute/{chunk_to}/{chunk_from}'
+                r = upstox_get(url, token)
+                if r.get('status') == 'success' and r.get('data', {}).get('candles'):
+                    all_candles.extend(r['data']['candles'])
+                cursor += timedelta(days=2)
+        else:
+            url = f'https://api.upstox.com/v2/historical-candle/{encoded}/{upstox_interval}/{to_date}/{from_date}'
+            r = upstox_get(url, token)
+            if r.get('status') == 'success' and r.get('data', {}).get('candles'):
+                all_candles = r['data']['candles']
+            else:
+                return pd.DataFrame(), r
 
-    if r.get('status') == 'success' and r.get('data', {}).get('candles'):
-        candles = r['data']['candles']
-        df = pd.DataFrame(candles, columns=['timestamp','open','high','low','close','volume','oi'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
-        df = df.set_index('timestamp').sort_index()
-        df = df.between_time('09:15','15:30')
-        # Resample 1min data to desired timeframe
-        if resample_to:
-            df = df.resample(resample_to, closed='left', label='left').agg({
-                'open':'first','high':'max','low':'min',
-                'close':'last','volume':'sum','oi':'last'
-            }).dropna()
-        return df, None
-    return pd.DataFrame(), r
+    if not all_candles:
+        return pd.DataFrame(), {'status':'error','message':'No candles returned from Upstox'}
+
+    df = pd.DataFrame(all_candles, columns=['timestamp','open','high','low','close','volume','oi'])
+    df['timestamp'] = pd.to_datetime(df['timestamp'])
+    df = df.drop_duplicates('timestamp').set_index('timestamp').sort_index()
+    df = df.between_time('09:15', '15:30')
+
+    # Resample 1min → 5/10/15 min
+    if resample_to:
+        df = df.resample(resample_to, closed='left', label='left').agg({
+            'open': 'first', 'high': 'max', 'low': 'min',
+            'close': 'last', 'volume': 'sum', 'oi': 'last'
+        }).dropna()
+
+    return df, None
 
 def fmt_k(n):
     if n is None or n == 0: return '—'
