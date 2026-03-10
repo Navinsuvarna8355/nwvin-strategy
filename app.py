@@ -361,17 +361,19 @@ def run_strategy(df, fast_len, fast_src, slow_len, slow_src, buffer, max_loss, o
     return trades, df
 
 def calc_max_pain(chain):
-    strikes = [d['strike_price'] for d in chain]
-    best, mn = strikes[0], float('inf')
-    for t in strikes:
-        pain = sum(
-            max(0, r['strike_price'] - t) * (r.get('call_options',{}).get('market_data',{}).get('oi',0) or 0) +
-            max(0, t - r['strike_price']) * (r.get('put_options',{}).get('market_data',{}).get('oi',0) or 0)
-            for r in chain
-        )
-        if pain < mn:
-            mn, best = pain, t
-    return best
+    if not chain:
+        return 0
+    try:
+        strikes  = np.array([d['strike_price'] for d in chain])
+        call_ois = np.array([d.get('call_options',{}).get('market_data',{}).get('oi',0) or 0 for d in chain])
+        put_ois  = np.array([d.get('put_options',{}).get('market_data',{}).get('oi',0) or 0 for d in chain])
+        pains = []
+        for t in strikes:
+            pain = np.sum(np.maximum(0, strikes - t) * call_ois) + np.sum(np.maximum(0, t - strikes) * put_ois)
+            pains.append(pain)
+        return int(strikes[np.argmin(pains)])
+    except Exception:
+        return int(chain[0].get('strike_price', 0))
 
 # ══════════════════════════════════════
 #  SIDEBAR
@@ -655,30 +657,35 @@ with tab2:
                 
                 # Build OI params from live chain data
                 oi_params = None
-                if use_oi_filter and st.session_state.chain_data:
-                    chain = st.session_state.chain_data
-                    spot      = chain[0].get('underlying_spot_price', 0)
-                    call_oi   = sum(d.get('call_options',{}).get('market_data',{}).get('oi',0) or 0 for d in chain)
-                    put_oi    = sum(d.get('put_options',{}).get('market_data',{}).get('oi',0) or 0 for d in chain)
-                    pcr_val   = put_oi / call_oi if call_oi > 0 else 1.0
-                    mp_val    = calc_max_pain(chain)
-                    step_val  = STEP.get(strat_symbol, 50)
-                    atm_val   = round(spot / step_val) * step_val
-                    atm_row   = next((d for d in chain if d['strike_price'] == atm_val), None)
-                    atm_ce_oi = atm_row.get('call_options',{}).get('market_data',{}).get('oi',0) or 0 if atm_row else 0
-                    atm_pe_oi = atm_row.get('put_options',{}).get('market_data',{}).get('oi',0) or 0 if atm_row else 0
-                    atm_ce_prev = atm_row.get('call_options',{}).get('market_data',{}).get('prev_oi',0) or 0 if atm_row else 0
-                    atm_pe_prev = atm_row.get('put_options',{}).get('market_data',{}).get('prev_oi',0) or 0 if atm_row else 0
-                    oi_params = {
-                        'pcr': pcr_val, 'max_pain': mp_val, 'mp_zone': mp_zone,
-                        'atm_ce_oi': atm_ce_oi, 'atm_pe_oi': atm_pe_oi,
-                        'atm_ce_prev': atm_ce_prev, 'atm_pe_prev': atm_pe_prev,
-                        'use_pcr': use_pcr_filter, 'use_mp': use_mp_filter,
-                        'use_atm': use_atm_filter, 'atm_spike_thresh': atm_spike,
-                    }
-                    st.info(f"🛡 OI Filters Active — PCR: {pcr_val:.2f} | Max Pain: {mp_val:,.0f} | ATM CE OI: {atm_ce_oi:,} | ATM PE OI: {atm_pe_oi:,}")
-                elif use_oi_filter and not st.session_state.chain_data:
-                    st.warning("⚠️ Fetch Option Chain first (Tab 1) to enable OI filters!")
+                try:
+                    if use_oi_filter and st.session_state.chain_data:
+                        chain = st.session_state.chain_data
+                        spot        = chain[0].get('underlying_spot_price', 0)
+                        call_oi     = sum(d.get('call_options',{}).get('market_data',{}).get('oi',0) or 0 for d in chain)
+                        put_oi      = sum(d.get('put_options',{}).get('market_data',{}).get('oi',0) or 0 for d in chain)
+                        pcr_val     = put_oi / call_oi if call_oi > 0 else 1.0
+                        mp_val      = calc_max_pain(chain)
+                        step_val    = STEP.get(strat_symbol, 50)
+                        atm_val     = round(spot / step_val) * step_val
+                        atm_row     = next((d for d in chain if d['strike_price'] == atm_val), None)
+                        atm_ce_oi   = atm_row.get('call_options',{}).get('market_data',{}).get('oi',0) or 0 if atm_row else 0
+                        atm_pe_oi   = atm_row.get('put_options',{}).get('market_data',{}).get('oi',0) or 0 if atm_row else 0
+                        atm_ce_prev = atm_row.get('call_options',{}).get('market_data',{}).get('prev_oi',0) or 0 if atm_row else 0
+                        atm_pe_prev = atm_row.get('put_options',{}).get('market_data',{}).get('prev_oi',0) or 0 if atm_row else 0
+                        oi_params = {
+                            'pcr': pcr_val, 'max_pain': mp_val, 'mp_zone': mp_zone,
+                            'atm_ce_oi': atm_ce_oi, 'atm_pe_oi': atm_pe_oi,
+                            'atm_ce_prev': atm_ce_prev, 'atm_pe_prev': atm_pe_prev,
+                            'use_pcr': use_pcr_filter, 'use_mp': use_mp_filter,
+                            'use_atm': use_atm_filter, 'atm_spike_thresh': atm_spike,
+                        }
+                        st.info(f"🛡 OI Filters Active — PCR: {pcr_val:.2f} | Max Pain: {mp_val:,.0f} | ATM CE OI: {atm_ce_oi:,} | ATM PE OI: {atm_pe_oi:,}")
+                    elif use_oi_filter and not st.session_state.chain_data:
+                        st.warning("⚠️ Fetch Option Chain first (Tab 1) to enable OI filters!")
+                except Exception as oi_err:
+                    st.warning(f"⚠️ OI filter error: {oi_err} — running without OI filters")
+                    oi_params = None
+
 
                 trades, df_sig = run_strategy(df_raw, fast_len, fast_src, slow_len, slow_src, buffer_pts, max_loss, oi_params)
                 st.session_state.trade_log = trades
