@@ -302,14 +302,14 @@ with st.sidebar:
     lookback     = st.selectbox("Lookback", ['2','5','10'], index=1)
     
     st.markdown("**Fast EMA**")
-    fast_len = st.number_input("Fast Length", value=9, min_value=2, max_value=200)
+    fast_len = st.number_input("Fast Length", value=9, min_value=2, max_value=200, help="NWVIN default: 9")
     fast_src = st.selectbox("Fast Source", ['Open','High','Low','Close'], index=0)
     
     st.markdown("**Slow EMA**")
-    slow_len = st.number_input("Slow Length", value=21, min_value=2, max_value=200)
+    slow_len = st.number_input("Slow Length", value=21, min_value=2, max_value=200, help="NWVIN default: 21")
     slow_src = st.selectbox("Slow Source", ['Open','High','Low','Close'], index=3)
     
-    buffer_pts = st.number_input("Buffer Points", value=2.0, step=0.5, min_value=0.0)
+    buffer_pts = st.number_input("Buffer Points (larger = fewer trades)", value=5.0, step=0.5, min_value=0.0)
     max_loss   = st.number_input("Max Loss SL (pts)", value=20.0, step=5.0, min_value=1.0)
     
     run_btn = st.button("🚀 Run Backtest", type="primary")
@@ -650,17 +650,19 @@ with tab4:
         c4.metric("🛑 SL Hits", sl_h)
         
         # Color styling
+        display_cols = ['Date','Time Entry','Time Exit','Trend','Entry ₹','Exit ₹','Points','SL Hit']
+        df_display = df_log[display_cols].copy()
+
         def color_rows(row):
-            if row['SL Hit']:
+            if row.get('SL Hit', False):
                 return ['background-color: rgba(255,208,0,.08)'] * len(row)
-            elif row['Points'] > 0:
+            elif float(row.get('Points', 0)) > 0:
                 return ['background-color: rgba(0,229,160,.05)'] * len(row)
             else:
                 return ['background-color: rgba(255,61,107,.05)'] * len(row)
-        
-        display_cols = ['Date','Time Entry','Time Exit','Trend','Entry ₹','Exit ₹','Points']
+
         st.dataframe(
-            df_log[display_cols].style.apply(color_rows, axis=1),
+            df_display.style.apply(color_rows, axis=1),
             use_container_width=True, height=500
         )
         
