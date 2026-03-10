@@ -244,7 +244,7 @@ def fmt_k(n):
 def calc_ema(series, length):
     return series.ewm(span=length, adjust=False).mean()
 
-def run_strategy(df, fast_len, fast_src, slow_len, slow_src, buffer, max_loss):
+def run_strategy(df, fast_len, fast_src, slow_len, slow_src, buffer, max_loss, oi_params=None):
     src_map = {'Open':'open','High':'high','Low':'low','Close':'close'}
     f_col = src_map.get(fast_src, 'open')
     s_col = src_map.get(slow_src, 'close')
@@ -306,7 +306,54 @@ def run_strategy(df, fast_len, fast_src, slow_len, slow_src, buffer, max_loss):
                 active = None
 
         if not active and sig != '⚪ SIDEWAYS':
-            active, e_price, e_time = sig, price, idx
+            # ── OI FILTERS ──
+            blocked = False
+            block_reason = ''
+
+            if oi_params:
+                pcr       = oi_params.get('pcr', 1.0)
+                max_pain  = oi_params.get('max_pain', price)
+                mp_zone   = oi_params.get('mp_zone', 150)
+                atm_ce_oi = oi_params.get('atm_ce_oi', 0)
+                atm_pe_oi = oi_params.get('atm_pe_oi', 0)
+                atm_ce_prev = oi_params.get('atm_ce_prev', 0)
+                atm_pe_prev = oi_params.get('atm_pe_prev', 0)
+                use_pcr   = oi_params.get('use_pcr', True)
+                use_mp    = oi_params.get('use_mp', True)
+                use_atm   = oi_params.get('use_atm', True)
+
+                # Filter 1: PCR Conflict Block
+                if use_pcr:
+                    if sig == '🟢 BUY' and pcr < 0.7:
+                        blocked = True
+                        block_reason = f'PCR={pcr:.2f} BEARISH — BUY blocked'
+                    elif sig == '🔴 SELL' and pcr > 1.3:
+                        blocked = True
+                        block_reason = f'PCR={pcr:.2f} BULLISH — SELL blocked'
+
+                # Filter 2: Max Pain Zone Block
+                if use_mp and not blocked:
+                    if sig == '🟢 BUY' and price > max_pain + mp_zone:
+                        blocked = True
+                        block_reason = f'Price {price:.0f} > MaxPain+{mp_zone} ({max_pain+mp_zone:.0f}) — BUY blocked'
+                    elif sig == '🔴 SELL' and price < max_pain - mp_zone:
+                        blocked = True
+                        block_reason = f'Price {price:.0f} < MaxPain-{mp_zone} ({max_pain-mp_zone:.0f}) — SELL blocked'
+
+                # Filter 3: ATM OI Spike Block
+                if use_atm and not blocked:
+                    ce_chg = (atm_ce_oi - atm_ce_prev) / atm_ce_prev * 100 if atm_ce_prev > 0 else 0
+                    pe_chg = (atm_pe_oi - atm_pe_prev) / atm_pe_prev * 100 if atm_pe_prev > 0 else 0
+                    spike_thresh = oi_params.get('atm_spike_thresh', 50)
+                    if sig == '🟢 BUY' and ce_chg > spike_thresh:
+                        blocked = True
+                        block_reason = f'ATM Call OI spike +{ce_chg:.0f}% — Strong resistance, BUY blocked'
+                    elif sig == '🔴 SELL' and pe_chg > spike_thresh:
+                        blocked = True
+                        block_reason = f'ATM Put OI spike +{pe_chg:.0f}% — Strong support, SELL blocked'
+
+            if not blocked:
+                active, e_price, e_time = sig, price, idx
 
     return trades, df
 
@@ -388,6 +435,15 @@ with st.sidebar:
     buffer_pts = st.number_input("Buffer Points (larger = fewer trades)", value=5.0, step=0.5, min_value=0.0)
     max_loss   = st.number_input("Max Loss SL (pts)", value=20.0, step=5.0, min_value=1.0)
     
+    st.markdown("---")
+    st.markdown("### 🛡 OI Filters (SL Reducer)")
+    use_oi_filter  = st.checkbox("Enable OI Filters", value=True)
+    use_pcr_filter = st.checkbox("PCR Conflict Block", value=True, help="BUY blocked if PCR<0.7 (Bearish). SELL blocked if PCR>1.3 (Bullish)")
+    use_mp_filter  = st.checkbox("Max Pain Zone", value=True, help="Block trades if price too far from Max Pain")
+    mp_zone        = st.number_input("Max Pain Zone (pts)", value=150, step=25, min_value=25, help="e.g. 150 = block BUY if price > MaxPain+150")
+    use_atm_filter = st.checkbox("ATM OI Spike Block", value=True, help="Block if ATM CE/PE OI suddenly spikes")
+    atm_spike      = st.number_input("ATM Spike Threshold %", value=50, step=10, min_value=10, help="Block if ATM OI increases by this % since last fetch")
+
     run_btn = st.button("🚀 Run Backtest", type="primary")
     
     st.markdown("---")
@@ -594,7 +650,34 @@ with tab2:
             else:
                 st.success(f"✓ {len(df_raw)} candles loaded ({df_raw.index[0].strftime('%d/%m %H:%M')} → {df_raw.index[-1].strftime('%d/%m %H:%M')})")
                 
-                trades, df_sig = run_strategy(df_raw, fast_len, fast_src, slow_len, slow_src, buffer_pts, max_loss)
+                # Build OI params from live chain data
+                oi_params = None
+                if use_oi_filter and st.session_state.chain_data:
+                    chain = st.session_state.chain_data
+                    spot      = chain[0].get('underlying_spot_price', 0)
+                    call_oi   = sum(d.get('call_options',{}).get('market_data',{}).get('oi',0) or 0 for d in chain)
+                    put_oi    = sum(d.get('put_options',{}).get('market_data',{}).get('oi',0) or 0 for d in chain)
+                    pcr_val   = put_oi / call_oi if call_oi > 0 else 1.0
+                    mp_val    = calc_max_pain(chain)
+                    step_val  = STEP.get(strat_symbol, 50)
+                    atm_val   = round(spot / step_val) * step_val
+                    atm_row   = next((d for d in chain if d['strike_price'] == atm_val), None)
+                    atm_ce_oi = atm_row.get('call_options',{}).get('market_data',{}).get('oi',0) or 0 if atm_row else 0
+                    atm_pe_oi = atm_row.get('put_options',{}).get('market_data',{}).get('oi',0) or 0 if atm_row else 0
+                    atm_ce_prev = atm_row.get('call_options',{}).get('market_data',{}).get('prev_oi',0) or 0 if atm_row else 0
+                    atm_pe_prev = atm_row.get('put_options',{}).get('market_data',{}).get('prev_oi',0) or 0 if atm_row else 0
+                    oi_params = {
+                        'pcr': pcr_val, 'max_pain': mp_val, 'mp_zone': mp_zone,
+                        'atm_ce_oi': atm_ce_oi, 'atm_pe_oi': atm_pe_oi,
+                        'atm_ce_prev': atm_ce_prev, 'atm_pe_prev': atm_pe_prev,
+                        'use_pcr': use_pcr_filter, 'use_mp': use_mp_filter,
+                        'use_atm': use_atm_filter, 'atm_spike_thresh': atm_spike,
+                    }
+                    st.info(f"🛡 OI Filters Active — PCR: {pcr_val:.2f} | Max Pain: {mp_val:,.0f} | ATM CE OI: {atm_ce_oi:,} | ATM PE OI: {atm_pe_oi:,}")
+                elif use_oi_filter and not st.session_state.chain_data:
+                    st.warning("⚠️ Fetch Option Chain first (Tab 1) to enable OI filters!")
+
+                trades, df_sig = run_strategy(df_raw, fast_len, fast_src, slow_len, slow_src, buffer_pts, max_loss, oi_params)
                 st.session_state.trade_log = trades
                 
                 last_sig = df_sig['signal'].iloc[-1] if not df_sig.empty else '⚪ SIDEWAYS'
