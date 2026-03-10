@@ -342,15 +342,18 @@ def run_strategy(df, fast_len, fast_src, slow_len, slow_src, buffer, max_loss, o
 
                 # Filter 3: ATM OI Spike Block
                 if use_atm and not blocked:
-                    ce_chg = (atm_ce_oi - atm_ce_prev) / atm_ce_prev * 100 if atm_ce_prev > 0 else 0
-                    pe_chg = (atm_pe_oi - atm_pe_prev) / atm_pe_prev * 100 if atm_pe_prev > 0 else 0
                     spike_thresh = oi_params.get('atm_spike_thresh', 50)
-                    if sig == '🟢 BUY' and ce_chg > spike_thresh:
-                        blocked = True
-                        block_reason = f'ATM Call OI spike +{ce_chg:.0f}% — Strong resistance, BUY blocked'
-                    elif sig == '🔴 SELL' and pe_chg > spike_thresh:
-                        blocked = True
-                        block_reason = f'ATM Put OI spike +{pe_chg:.0f}% — Strong support, SELL blocked'
+                    # Only apply if prev_oi is meaningful (>100), else skip silently
+                    if atm_ce_prev > 100 and atm_pe_prev > 100:
+                        ce_chg = (atm_ce_oi - atm_ce_prev) / atm_ce_prev * 100
+                        pe_chg = (atm_pe_oi - atm_pe_prev) / atm_pe_prev * 100
+                        if sig == '🟢 BUY' and ce_chg > spike_thresh:
+                            blocked = True
+                            block_reason = f'ATM Call OI spike +{ce_chg:.0f}% — Strong resistance, BUY blocked'
+                        elif sig == '🔴 SELL' and pe_chg > spike_thresh:
+                            blocked = True
+                            block_reason = f'ATM Put OI spike +{pe_chg:.0f}% — Strong support, SELL blocked'
+                    # prev_oi=0 means first fetch of day — skip filter, don't block
 
             if not blocked:
                 active, e_price, e_time = sig, price, idx
