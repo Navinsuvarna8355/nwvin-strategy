@@ -341,19 +341,19 @@ def run_strategy(df, fast_len, fast_src, slow_len, slow_src, buffer, max_loss, o
                         blocked = True
                         block_reason = f'SELL blocked: Price({price:.0f}) < MaxPain-Zone({max_pain-mp_zone:.0f})'
 
-                # Filter 3: ATM OI Spike Block
+                # Filter 3: ATM CE/PE Dominance Block
+                # Uses current CE vs PE OI ratio (prev_oi unreliable in Upstox free)
                 if use_atm and not blocked:
-                    if atm_ce_prev > 100 and atm_pe_prev > 100:
-                        ce_chg = (atm_ce_oi - atm_ce_prev) / atm_ce_prev * 100
-                        pe_chg = (atm_pe_oi - atm_pe_prev) / atm_pe_prev * 100
-                        if sig == '🟢 BUY' and ce_chg > spike_thresh:
+                    if atm_ce_oi > 0 and atm_pe_oi > 0:
+                        ce_pe_ratio  = atm_ce_oi / atm_pe_oi
+                        pe_ce_ratio  = atm_pe_oi / atm_ce_oi
+                        ratio_thresh = 1.0 + (spike_thresh / 100.0)
+                        if sig == '🟢 BUY' and ce_pe_ratio > ratio_thresh:
                             blocked = True
-                            block_reason = f'ATM Call OI spike +{ce_chg:.0f}% > {spike_thresh}% — BUY blocked'
-                        elif sig == '🔴 SELL' and pe_chg > spike_thresh:
+                            block_reason = f'ATM CE/PE={ce_pe_ratio:.2f} > {ratio_thresh:.2f} — Resistance, BUY blocked'
+                        elif sig == '🔴 SELL' and pe_ce_ratio > ratio_thresh:
                             blocked = True
-                            block_reason = f'ATM Put OI spike +{pe_chg:.0f}% > {spike_thresh}% — SELL blocked'
-
-            if not blocked:
+                            block_reason = f'ATM PE/CE={pe_ce_ratio:.2f} > {ratio_thresh:.2f} — Support, SELL blocked'
                 active, e_price, e_time = sig, price, idx
             else:
                 # Track blocked trades for debug
@@ -452,7 +452,7 @@ with st.sidebar:
     use_mp_filter  = st.checkbox("Max Pain Zone", value=True, help="Block trades if price too far from Max Pain")
     mp_zone        = st.number_input("Max Pain Zone (pts)", value=500, step=25, min_value=25, help="Block BUY if price > MaxPain+X pts. Set high (500+) if Max Pain is far from spot.")
     use_atm_filter = st.checkbox("ATM OI Spike Block", value=True, help="Block if ATM CE/PE OI suddenly spikes")
-    atm_spike      = st.number_input("ATM Spike Threshold %", value=50, step=10, min_value=10, help="Block if ATM OI increases by this % since last fetch")
+    atm_spike      = st.number_input("ATM Dominance Ratio %", value=50, step=10, min_value=10, help="50 = block if ATM CE OI is 1.5x PE OI (resistance). Higher = less filtering.")
 
     run_btn = st.button("🚀 Run Backtest", type="primary")
     
