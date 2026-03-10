@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -150,8 +150,8 @@ def get_historical_data(symbol, interval, token, days=5):
     imap = {'1m':'1minute','5m':'5minute','15m':'15minute','30m':'30minute','1h':'60minute'}
     upstox_interval = imap.get(interval, '15minute')
     
-    to_date   = datetime.now().strftime('%Y-%m-%d')
-    from_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+    to_date   = ( datetime.now(timezone.utc) + timedelta(hours=5, minutes=30) ).strftime('%Y-%m-%d')
+    from_date = (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30) - timedelta(days=days)).strftime('%Y-%m-%d')
     
     url = f'https://api.upstox.com/v2/historical-candle/{requests.utils.quote(key)}/{upstox_interval}/{to_date}/{from_date}'
     r = upstox_get(url, token)
@@ -325,7 +325,7 @@ with col_h1:
     st.markdown("# 🛡 NWVIN Strategy Lab Pro")
     st.markdown("`Upstox Live OI · EMA Signal Engine · Confluence System · Read-Only`")
 with col_h2:
-    now = datetime.now().strftime('%H:%M:%S')
+    now = ( datetime.now(timezone.utc) + timedelta(hours=5, minutes=30) ).strftime('%H:%M:%S')
     st.metric("🕐 Time", now)
 with col_h3:
     sig = st.session_state.ema_signal
