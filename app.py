@@ -146,11 +146,27 @@ def get_option_chain(symbol, expiry, token):
 def get_historical_data(symbol, interval, token, days=5):
     """Fetch real OHLC from Upstox - tries intraday endpoint first, then range"""
     key = INSTR.get(symbol, '')
-    imap = {'1m':'1minute','5m':'30minute','15m':'30minute','30m':'30minute','1h':'day'}
+    # Map display names to Upstox valid intervals
+    imap = {
+        '5 Min':  '1minute',   # fetch 1min, resample to 5min
+        '10 Min': '1minute',   # fetch 1min, resample to 10min
+        '15 Min': '1minute',   # fetch 1min, resample to 15min
+        '30 Min': '30minute',  # direct 30min
+        '1 Hour': 'day',       # daily candles
+    }
+    resample_map = {
+        '5 Min':'5min', '10 Min':'10min', '15 Min':'15min',
+        '30 Min':None, '1 Hour':None
+    }
     upstox_interval = imap.get(interval, '30minute')
+    resample_to = resample_map.get(interval, None)
 
     ist_now   = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
     to_date   = ist_now.strftime('%Y-%m-%d')
+    # Map lookback string to days
+    lb_map = {'1 Day':1, '5 Days':5, '1 Month':30}
+    if isinstance(days, str):
+        days = lb_map.get(days, 5)
     from_date = (ist_now - timedelta(days=days)).strftime('%Y-%m-%d')
     encoded   = requests.utils.quote(key, safe='')
 
@@ -170,6 +186,12 @@ def get_historical_data(symbol, interval, token, days=5):
         df['timestamp'] = pd.to_datetime(df['timestamp'])
         df = df.set_index('timestamp').sort_index()
         df = df.between_time('09:15','15:30')
+        # Resample 1min data to desired timeframe
+        if resample_to:
+            df = df.resample(resample_to, closed='left', label='left').agg({
+                'open':'first','high':'max','low':'min',
+                'close':'last','volume':'sum','oi':'last'
+            }).dropna()
         return df, None
     return pd.DataFrame(), r
 
@@ -298,8 +320,8 @@ with st.sidebar:
     # Strategy params
     st.markdown("### ⚡ Strategy Lab")
     strat_symbol = st.selectbox("Symbol", list(INSTR.keys()), key='strat_sym')
-    tf           = st.selectbox("Timeframe", ['1m','30m','1h'], index=1, help='Upstox supports: 1min, 30min, Day')
-    lookback     = st.selectbox("Lookback", ['2','5','10'], index=1)
+    tf           = st.selectbox("Timeframe", ['5 Min','10 Min','15 Min','30 Min','1 Hour'], index=2)
+    lookback     = st.selectbox("Lookback", ['1 Day','5 Days','1 Month'], index=1)
     
     st.markdown("**Fast EMA**")
     fast_len = st.number_input("Fast Length", value=9, min_value=2, max_value=200, help="NWVIN default: 9")
@@ -508,7 +530,7 @@ with tab2:
             st.error("⚠️ Set Upstox token first in sidebar!")
         else:
             with st.spinner(f"📡 Fetching real {tf} OHLC data from Upstox..."):
-                df_raw, api_err = get_historical_data(strat_symbol, tf, st.session_state.access_token, days=int(lookback))
+                df_raw, api_err = get_historical_data(strat_symbol, tf, st.session_state.access_token, days=lookback)
             
             if df_raw.empty:
                 st.error("❌ No data returned. Check token or try different timeframe.")
